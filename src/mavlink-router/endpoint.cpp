@@ -345,9 +345,8 @@ bool Endpoint::accept_msg(int target_sysid, int target_compid, uint8_t src_sysid
         return false;
     }
 
-    // This endpoint sent the message, we don't want to send it back over the
-    // same channel to avoid loops: reject
-    if (has_sys_comp_id(src_sysid, src_compid))
+    // This endpoint sent the message, and there's no other sys_comp_id: reject msg
+    if (has_sys_comp_id(src_sysid, src_compid) && _sys_comp_ids.size() == 1)
         return false;
 
     // Message is broadcast on sysid: accept msg
