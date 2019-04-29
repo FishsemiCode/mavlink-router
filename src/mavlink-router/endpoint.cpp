@@ -42,8 +42,7 @@
 #define UART_BAUD_RETRY_SEC 5
 
 Endpoint::Endpoint(const char *name, bool crc_check_enabled)
-    : _name{name}
-    , _crc_check_enabled{crc_check_enabled}
+    : _crc_check_enabled{crc_check_enabled}
 {
     rx_buf.data = (uint8_t *) malloc(RX_BUF_MAX_SIZE);
     rx_buf.len = 0;
@@ -56,12 +55,16 @@ Endpoint::Endpoint(const char *name, bool crc_check_enabled)
         char* p = strchr(name, ':');
         if (p != nullptr) {
             safe_atoi(p+1, &_group);
+            _name = strndup(name, p-name);
+        } else {
+            _name = strdup(name);
         }
     }
 }
 
 Endpoint::~Endpoint()
 {
+    free(_name);
     free(rx_buf.data);
     free(tx_buf.data);
 }
@@ -76,18 +79,19 @@ int Endpoint::handle_read()
 {
     int target_sysid, target_compid, r;
     uint8_t src_sysid, src_compid;
+    uint32_t msg_id;
     struct buffer buf{};
 
     do {
         uint64_t now_msec = now_usec() / USEC_PER_MSEC;
-        r = read_msg(&buf, &target_sysid, &target_compid, &src_sysid, &src_compid);
+        r = read_msg(&buf, &target_sysid, &target_compid, &src_sysid, &src_compid, &msg_id);
         uint64_t duration = now_usec() / USEC_PER_MSEC - now_msec;
         if (duration > 3) {
             log_warning("[%s] reading may block mainloop: [%lums]", name(), duration);
         }
         if (r > 0) {
             Mainloop::get_instance().route_msg(&buf, target_sysid, target_compid, src_sysid,
-                                               src_compid, this);
+                                               src_compid, this, msg_id);
         }
     } while(r > 0);
 
@@ -95,7 +99,7 @@ int Endpoint::handle_read()
 }
 
 int Endpoint::read_msg(struct buffer *pbuf, int *target_sysid, int *target_compid,
-                       uint8_t *src_sysid, uint8_t *src_compid)
+                       uint8_t *src_sysid, uint8_t *src_compid, uint32_t *pmsg_id)
 {
     bool should_read_more = true;
     uint32_t msg_id;
@@ -249,6 +253,8 @@ int Endpoint::read_msg(struct buffer *pbuf, int *target_sysid, int *target_compi
         _add_sys_comp_id(((uint16_t)*src_sysid << 8) | *src_compid);
     }
 
+    *pmsg_id = msg_id;
+
     *target_sysid = -1;
     *target_compid = -1;
 
@@ -324,14 +330,24 @@ bool Endpoint::has_sys_comp_id(unsigned sys_comp_id)
 }
 
 bool Endpoint::accept_msg(int target_sysid, int target_compid, uint8_t src_sysid,
-                          uint8_t src_compid, Endpoint* src_endpoint)
+                          uint8_t src_compid, Endpoint* src_endpoint, uint32_t msg_id)
 {
     if (Log::get_max_level() >= Log::Level::DEBUG) {
-        log_debug("Endpoint [%s][%d] got message to %d/%d from [%s]%u/%u", name(), fd, target_sysid, target_compid,
-                  (src_endpoint == nullptr) ? "NONAME" : src_endpoint->name(), src_sysid, src_compid);
+        log_debug("Endpoint [%s][%d] got message [%u] to %d/%d from [%s]%u/%u",
+                  name(), fd,
+                  msg_id, target_sysid, target_compid,
+                  (src_endpoint == nullptr) ? "NONAME" : src_endpoint->name(),
+                  src_sysid, src_compid);
         log_debug("\tKnown endpoints:");
         for (auto it = _sys_comp_ids.begin(); it != _sys_comp_ids.end(); it++) {
             log_debug("\t\t%u/%u", (*it >> 8), *it & 0xff);
+        }
+        log_debug("\tMsg filter [%d]:", _filter_type);
+        for (auto it = _msg_filter.begin(); it != _msg_filter.end(); it++) {
+            log_debug("\t\t%u", *it);
+        }
+        for (auto it = _sys_comp_filter.begin(); it != _sys_comp_filter.end(); it++) {
+            log_debug("\t\t%u/%u", *it >> 8, *it & 0xff);
         }
     }
 
@@ -349,16 +365,29 @@ bool Endpoint::accept_msg(int target_sysid, int target_compid, uint8_t src_sysid
     if (has_sys_comp_id(src_sysid, src_compid) && _sys_comp_ids.size() == 1)
         return false;
 
+    // black list filter
+    if (_filter_type == BlackList
+            && (in_msg_filter(msg_id) || in_sys_comp_filter(src_sysid, src_compid))) {
+        return false;
+    }
+
     // Message is broadcast on sysid: accept msg
-    if (target_sysid == 0 || target_sysid == -1)
+    if (target_sysid == 0 || target_sysid == -1) {
+        // in whitelist mode, only accept boardcast msg in white list filter
+        if (_filter_type == WhiteList &&
+                ((_msg_filter.size() > 0 && !in_msg_filter(msg_id)) ||
+                 (_sys_comp_filter.size() > 0 && !in_sys_comp_filter(src_sysid, src_compid)))) {
+            return false;
+        }
         return true;
+    }
 
     // This endpoint has the target of message (sys and comp id): accept
     if (target_compid > 0 && has_sys_comp_id(target_sysid, target_compid))
         return true;
 
     // This endpoint has the target of message (sysid, but compid is broadcast): accept
-    if (has_sys_id(target_sysid))
+    if (has_sys_id(target_sysid) && (target_compid == 0 || target_compid == -1))
         return true;
 
     // Reject everything else
@@ -373,6 +402,49 @@ const char* Endpoint::name()
 int Endpoint::group()
 {
     return _group;
+}
+
+void Endpoint::set_filter(filter_type type, std::vector<uint32_t> msg_ids, std::vector<uint16_t> sys_comp_ids)
+{
+    _filter_type = type;
+    _msg_filter = msg_ids;
+    _sys_comp_filter = sys_comp_ids;
+    for (auto it = _msg_filter.begin(); it != _msg_filter.end(); it++) {
+        log_info("msg filter for [%s], type [%d]: [%u]", _name, _filter_type, *it);
+    }
+    for (auto it = _sys_comp_filter.begin(); it != _sys_comp_filter.end(); it++) {
+        log_info("sys comp filter for [%s], type [%d]: [%u/%u]", _name, _filter_type, (*it) >> 8, (*it) & 0xff);
+    }
+}
+
+bool Endpoint::in_msg_filter(uint32_t msg_id)
+{
+    for (auto it = _msg_filter.begin(); it != _msg_filter.end(); it++) {
+        if (msg_id == *it)
+            return true;
+    }
+
+    return false;
+}
+
+bool Endpoint::in_sys_comp_filter(uint8_t sysid, uint8_t compid)
+{
+    uint8_t id;
+
+    for (auto it = _sys_comp_filter.begin(); it != _sys_comp_filter.end(); it++) {
+        if(compid == (*it) & 0xff) {
+            id = (*it) >> 8;
+            if (id == 0 || id == sysid) {
+                return true;
+            }
+        } else if (sysid == (*it) >> 8) {
+            id = (*it) & 0xff;
+            if (id == 0 || id == compid) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 bool Endpoint::_check_crc(const mavlink_msg_entry_t *msg_entry)
@@ -605,9 +677,9 @@ bool UartEndpoint::_change_baud_cb(void *data)
 }
 
 int UartEndpoint::read_msg(struct buffer *pbuf, int *target_sysid, int *target_compid,
-                           uint8_t *src_sysid, uint8_t *src_compid)
+                           uint8_t *src_sysid, uint8_t *src_compid, uint32_t *pmsg_id)
 {
-    int ret = Endpoint::read_msg(pbuf, target_sysid, target_compid, src_sysid, src_compid);
+    int ret = Endpoint::read_msg(pbuf, target_sysid, target_compid, src_sysid, src_compid, pmsg_id);
 
     if (_change_baud_timeout != nullptr && ret == ReadOk) {
         log_info("Baudrate %lu responded, keeping it", _baudrates[_current_baud_idx]);
@@ -681,9 +753,23 @@ UdpEndpoint::UdpEndpoint(const char* name)
     bzero(&sockaddr, sizeof(sockaddr));
 }
 
+UdpEndpoint::~UdpEndpoint()
+{
+    close();
+    free(_ip);
+    _ip = nullptr;
+}
+
 int UdpEndpoint::open(const char *ip, unsigned long port, bool to_bind)
 {
-    const int broadcast_val = 1;
+    if (!_ip || strcmp(ip, _ip)) {
+        free(_ip);
+        _ip = strdup(ip);
+        _port = port;
+    }
+
+    assert_or_return(_ip, -ENOMEM);
+
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) {
         log_error("Could not create socket (%m)");
@@ -697,11 +783,6 @@ int UdpEndpoint::open(const char *ip, unsigned long port, bool to_bind)
     if (to_bind) {
         if (bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr)) < 0) {
             log_error("Error binding socket (%m)");
-            goto fail;
-        }
-    } else {
-        if (setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast_val, sizeof(broadcast_val))) {
-            log_error("Error enabling broadcast in socket (%m)");
             goto fail;
         }
     }
@@ -723,6 +804,16 @@ fail:
         fd = -1;
     }
     return -1;
+}
+
+void UdpEndpoint::close()
+{
+    if (fd > -1) {
+        ::close(fd);
+        log_info("UDP connection closed [%d]", fd);
+    }
+
+    fd = -1;
 }
 
 ssize_t UdpEndpoint::_read_msg(uint8_t *buf, size_t len)
@@ -916,7 +1007,7 @@ LocalEndpoint::LocalEndpoint(const char *name)
     bzero(&sockaddr, sizeof(sockaddr));
 }
 
-int LocalEndpoint::open(const char *sock_name, bool to_bind)
+int LocalEndpoint::open(const char *sock_name, const char* remote_name)
 {
     int flags = 0;
     fd = socket(AF_UNIX, SOCK_DGRAM, 0);
@@ -925,16 +1016,26 @@ int LocalEndpoint::open(const char *sock_name, bool to_bind)
         return -1;
     }
 
-    sockaddr.sun_family = AF_UNIX;
-    sockaddr.sun_path[0] = 0;
-    strcpy(sockaddr.sun_path+1, sock_name);
-    sockaddr_len = strlen(sock_name) + offsetof(struct sockaddr_un, sun_path) + 1;
+    if (sock_name != nullptr) {
+        sockaddr.sun_family = AF_UNIX;
+        sockaddr.sun_path[0] = 0;
+        strcpy(sockaddr.sun_path+1, sock_name);
+        sockaddr_len = strlen(sock_name) + offsetof(struct sockaddr_un, sun_path) + 1;
 
-    if (to_bind) {
         if (bind(fd, (struct sockaddr *) &sockaddr, sockaddr_len)) {
             log_error("Error binding socket to %s (%m)", sock_name);
             goto fail;
         }
+    }
+
+    bzero(&sockaddr, sizeof(sockaddr));
+    sockaddr_len = 0;
+
+    if (remote_name != nullptr) {
+        sockaddr.sun_family = AF_UNIX;
+        sockaddr.sun_path[0] = 0;
+        strcpy(sockaddr.sun_path+1, remote_name);
+        sockaddr_len = strlen(remote_name) + offsetof(struct sockaddr_un, sun_path) + 1;
     }
 
     if ((flags = fcntl(fd, F_GETFL, 0) == -1)) {
@@ -945,9 +1046,7 @@ int LocalEndpoint::open(const char *sock_name, bool to_bind)
         log_error("controller: Error setting socket fd as non-blocking");
         goto fail;
     }
-    if (to_bind)
-        sockaddr_len = 0;
-    log_info("Open LOCAL [%d] %s %c", fd, sock_name, to_bind ? '*' : ' ');
+    log_info("Open LOCAL [%d] [%s]-[%s]", fd, sock_name, remote_name);
 
     return fd;
 

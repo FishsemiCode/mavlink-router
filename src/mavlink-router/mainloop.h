@@ -28,6 +28,11 @@ struct endpoint_entry {
     TcpEndpoint *endpoint;
 };
 
+struct udp_endpoint_entry {
+    struct udp_endpoint_entry *next;
+    UdpEndpoint *endpoint;
+};
+
 class Mainloop {
 public:
     int open();
@@ -36,7 +41,7 @@ public:
     int remove_fd(int fd);
     void loop();
     void route_msg(struct buffer *buf, int target_sysid, int target_compid, int sender_sysid,
-                   int sender_compid, Endpoint* src_endpoint);
+                   int sender_compid, Endpoint* src_endpoint, uint32_t msg_id);
     void handle_read(Endpoint *e);
     void handle_canwrite(Endpoint *e);
     void handle_tcp_connection();
@@ -47,6 +52,12 @@ public:
 
     void free_endpoints(struct options *opt);
     bool add_endpoints(Mainloop &mainloop, struct options *opt);
+
+    bool add_udp_endpoint(UdpEndpoint *udp);
+    bool remove_udp_endpoint(const char *ip, unsigned long port);
+    bool find_udp_endpoint(const char *ip, unsigned long port);
+
+    bool set_endpoint_filter(const char *name, filter_type type, std::vector<uint32_t> *msg_ids, std::vector<uint16_t> *sys_comp_ids);
 
     void print_statistics();
 
@@ -72,6 +83,7 @@ private:
     static const unsigned int LOG_AGGREGATE_INTERVAL_SEC = 5;
 
     endpoint_entry *g_tcp_endpoints = nullptr;
+    udp_endpoint_entry *g_udp_endpoints = nullptr;
     Endpoint **g_endpoints = nullptr;
     int g_tcp_fd = -1;
     LogEndpoint *_log_endpoint = nullptr;
@@ -97,7 +109,7 @@ private:
     static bool _initialized;
 };
 
-enum endpoint_type { Tcp, Uart, Udp, Local, Unknown };
+enum endpoint_type { Tcp, Uart, Udp, Local, Dynamic, Unknown };
 enum mavlink_dialect { Auto, Common, Ardupilotmega };
 
 struct endpoint_config {
@@ -118,16 +130,29 @@ struct endpoint_config {
         };
         struct {
             char* sockname;
-            bool binding;
+            char* remotename;
+        };
+        struct {
+            int port_number;
         };
     };
 };
 
+struct filter_config {
+    struct filter_config *next;
+    enum filter_type type;
+    char *endpoint_name;
+    std::vector<uint32_t> *msg_ids;
+    std::vector<uint16_t> *sys_comp_ids;
+};
+
 struct options {
     struct endpoint_config *endpoints;
+    struct filter_config *filters;
     const char *conf_file_name;
     const char *conf_dir;
     unsigned long tcp_port;
+    char* controller;
     bool report_msg_statistics;
     char *logs_dir;
     int debug_log_level;

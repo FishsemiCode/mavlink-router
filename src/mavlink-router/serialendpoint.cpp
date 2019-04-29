@@ -156,6 +156,7 @@ int SerialEndpoint::set_speed(uint32_t baudrate)
         return -1;
     }
     _last_baudrate = baudrate;
+    log_info("set uart baudrate to: [%u]", _last_baudrate);
     return 0;
 }
 
@@ -194,9 +195,10 @@ ssize_t SerialEndpoint::_read_msg(uint8_t* buf, size_t len)
     return r;
 }
 
-int SerialEndpoint::read_msg(struct buffer* pbuf, int* target_sysid, int* target_compid, uint8_t* src_sysid, uint8_t* src_compid)
+int SerialEndpoint::read_msg(struct buffer* pbuf, int* target_sysid, int* target_compid,
+                             uint8_t* src_sysid, uint8_t* src_compid, uint32_t* pmsg_id)
 {
-    int ret = Endpoint::read_msg(pbuf, target_sysid, target_compid, src_sysid, src_compid);
+    int ret = Endpoint::read_msg(pbuf, target_sysid, target_compid, src_sysid, src_compid, pmsg_id);
     if (ret == CrcErrorMsg || ret == ReadUnkownMsg) {
         _read_error_count++;
         if ((_change_baudrate_timeout == nullptr) && (_read_error_count > 1)) {

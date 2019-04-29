@@ -66,6 +66,8 @@ struct _packed_ mavlink_router_mavlink1_header {
     uint8_t msgid;
 };
 
+enum filter_type { NoFilter, BlackList, WhiteList };
+
 class Endpoint : public Pollable {
 public:
     /*
@@ -98,21 +100,26 @@ public:
         return has_sys_comp_id(sys_comp_id);
     }
 
-    bool accept_msg(int target_sysid, int target_compid, uint8_t src_sysid, uint8_t src_compid, Endpoint* src_endpoint);
+    bool accept_msg(int target_sysid, int target_compid, uint8_t src_sysid, uint8_t src_compid,
+                    Endpoint* src_endpoint, uint32_t msg_id);
     const char* name();
     int group();
+
+    void set_filter(filter_type type, std::vector<uint32_t> _msg_ids, std::vector<uint16_t> sys_comp_ids);
+    bool in_msg_filter(uint32_t msg_id);
+    bool in_sys_comp_filter(uint8_t sysid, uint8_t compid);
 
     struct buffer rx_buf;
     struct buffer tx_buf;
 
 protected:
     virtual int read_msg(struct buffer *pbuf, int *target_system, int *target_compid,
-                         uint8_t *src_sysid, uint8_t *src_compid);
+                         uint8_t *src_sysid, uint8_t *src_compid, uint32_t *pmsg_id);
     virtual ssize_t _read_msg(uint8_t *buf, size_t len) = 0;
     bool _check_crc(const mavlink_msg_entry_t *msg_entry);
     void _add_sys_comp_id(uint16_t sys_comp_id);
 
-    const char *_name;
+    char *_name = nullptr;
     size_t _last_packet_len = 0;
 
     // Statistics
@@ -136,6 +143,9 @@ protected:
     const bool _crc_check_enabled;
     uint32_t _incomplete_msgs = 0;
     std::vector<uint16_t> _sys_comp_ids;
+    filter_type _filter_type = NoFilter;
+    std::vector<uint32_t> _msg_filter;
+    std::vector<uint16_t> _sys_comp_filter;
 };
 
 class UartEndpoint : public Endpoint {
@@ -152,7 +162,7 @@ public:
 
 protected:
     int read_msg(struct buffer *pbuf, int *target_system, int *target_compid, uint8_t *src_sysid,
-                 uint8_t *src_compid) override;
+                 uint8_t *src_compid, uint32_t *pmsg_id) override;
     ssize_t _read_msg(uint8_t *buf, size_t len) override;
 
 private:
@@ -166,17 +176,30 @@ private:
 class UdpEndpoint : public Endpoint {
 public:
     UdpEndpoint(const char *name);
-    virtual ~UdpEndpoint() { }
+    ~UdpEndpoint();
 
     int write_msg(const struct buffer *pbuf) override;
     int flush_pending_msgs() override { return -ENOSYS; }
 
     int open(const char *ip, unsigned long port, bool bind = false);
+    void close();
+
+    inline const char *get_ip() {
+        return _ip;
+    }
+
+    inline unsigned long get_port() {
+        return _port;
+    }
 
     struct sockaddr_in sockaddr;
 
 protected:
     ssize_t _read_msg(uint8_t *buf, size_t len) override;
+
+private:
+    char *_ip = nullptr;
+    unsigned long _port = 0;
 };
 
 class TcpEndpoint : public Endpoint {
@@ -221,10 +244,10 @@ public:
     int write_msg(const struct buffer *pbuf) override;
     int flush_pending_msgs() override { return -ENOSYS; }
 
-    int open(const char* sock_name, bool bind = false);
+    int open(const char* sock_name, const char* remote_name);
 
     struct sockaddr_un sockaddr;
-    socklen_t sockaddr_len;
+    socklen_t sockaddr_len = 0;
 
 protected:
     ssize_t _read_msg(uint8_t *buf, size_t len) override;

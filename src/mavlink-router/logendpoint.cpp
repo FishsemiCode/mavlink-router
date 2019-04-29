@@ -47,7 +47,7 @@ void LogEndpoint::_send_msg(const mavlink_message_t *msg, int target_sysid)
 
     buffer.len = mavlink_msg_to_send_buffer(data, msg);
     Mainloop::get_instance().route_msg(&buffer, target_sysid, MAV_COMP_ID_ALL, msg->sysid,
-                                       msg->compid, this);
+                                       msg->compid, this, msg->msgid);
 
     _stat.read.total++;
     _stat.read.handled++;

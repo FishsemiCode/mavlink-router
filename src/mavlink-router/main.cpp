@@ -32,6 +32,7 @@
 #include "comm.h"
 #include "endpoint.h"
 #include "mainloop.h"
+#include "controller.h"
 
 #define MAVLINK_TCP_PORT 5760
 #define DEFAULT_BAUDRATE 115200U
@@ -59,9 +60,11 @@ static const char *__getProgramName () {
 
 static struct options opt = {
         .endpoints = nullptr,
+        .filters = nullptr,
         .conf_file_name = nullptr,
         .conf_dir = nullptr,
         .tcp_port = ULONG_MAX,
+        .controller = nullptr,
         .report_msg_statistics = false,
         .logs_dir = nullptr,
         .debug_log_level = (int)Log::Level::INFO,
@@ -278,7 +281,7 @@ fail:
 }
 
 static int add_local_endpoint(const char *name, size_t name_len, const char *sockname,
-                              bool binding)
+                              const char *remotename)
 {
     int ret;
 
@@ -301,7 +304,13 @@ static int add_local_endpoint(const char *name, size_t name_len, const char *soc
         goto fail;
     }
 
-    conf->binding = binding;
+    if (remotename != nullptr) {
+        conf->remotename = strdup(remotename);
+        if (!conf->remotename) {
+            ret = -ENOMEM;
+            goto fail;
+        }
+    }
 
     conf->next = opt.endpoints;
     opt.endpoints = conf;
@@ -310,11 +319,44 @@ static int add_local_endpoint(const char *name, size_t name_len, const char *soc
 
 fail:
     free(conf->sockname);
+    free(conf->remotename);
     free(conf->name);
     free(conf);
 
     return ret;
 }
+
+static int add_dynamic_endpoint(const char *name, size_t name_len, int port)
+{
+    int ret;
+
+    struct endpoint_config *conf
+        = (struct endpoint_config *)calloc(1, sizeof(struct endpoint_config));
+    assert_or_return(conf, -ENOMEM);
+    conf->type = Dynamic;
+
+    if (!conf->name && name) {
+        conf->name = strndup(name, name_len);
+        if (!conf->name) {
+            ret = -ENOMEM;
+            goto fail;
+        }
+    }
+
+    conf->port_number = port;
+
+    conf->next = opt.endpoints;
+    opt.endpoints = conf;
+
+    return 0;
+
+fail:
+    free(conf->name);
+    free(conf);
+
+    return ret;
+}
+
 static std::vector<unsigned long> *strlist_to_ul(const char *list,
                                                  const char *listname,
                                                  const char *delim,
@@ -401,6 +443,81 @@ fail:
     free(conf);
 
     return ret;
+}
+
+static int add_msg_filter(const char *endpoint_name, filter_type type, char *filter)
+{
+    int ret;
+    char *s;
+    const char *delim = ", ";
+    struct filter_config *conf;
+
+    conf = (struct filter_config *)calloc(1, sizeof(struct filter_config));
+    assert_or_return(conf, -ENOMEM);
+    conf->type = type;
+
+    if (endpoint_name) {
+        conf->endpoint_name = strdup(endpoint_name);
+        if (!conf->endpoint_name) {
+            ret = -ENOMEM;
+            goto fail;
+        }
+    }
+
+    conf->msg_ids = new std::vector<uint32_t>();
+    conf->sys_comp_ids = new std::vector<uint16_t>();
+    if (!conf->msg_ids || !conf->sys_comp_ids) {
+        ret = -ENOMEM;
+        goto fail;
+    }
+
+    s = strtok(filter, delim);
+    while (s) {
+        int i, j;
+        char *p, *q;
+        p = strchr(s, '/');
+        if (p != nullptr) {
+            q = strndup(s, p-s);
+            if (safe_atoi(q, &i) < 0 || safe_atoi(p+1, &j)) {
+                free(q);
+                log_error("Invalid %s %s", filter, s);
+                ret = -EINVAL;
+                goto fail;
+            }
+            free(q);
+            conf->sys_comp_ids->push_back((uint16_t)((i << 8) | (j & 0xff)));
+        } else {
+            if (safe_atoi(s, &i) < 0) {
+                log_error("Invalid %s %s", filter, s);
+                ret = -EINVAL;
+                goto fail;
+            }
+            conf->msg_ids->push_back(i);
+        }
+        s = strtok(NULL, delim);
+    }
+
+    conf->next = opt.filters;
+    opt.filters = conf;
+
+    return 0;
+
+fail:
+    free(conf->msg_ids);
+    free(conf->endpoint_name);
+    free(conf);
+
+    return ret;
+}
+
+static int get_endpoint_count()
+{
+    struct endpoint_config *conf;
+    int count = 0;
+    for (conf = opt.endpoints; conf; conf = conf->next) {
+        count++;
+    }
+    return count;
 }
 
 static bool pre_parse_argv(int argc, char *argv[])
@@ -627,7 +744,7 @@ static int parse_log_level(const char *val, size_t val_len, void *storage, size_
         return -EINVAL;
 
 //    const char *log_level = strndupa(val, val_len);
-    char log_level[MAX_LOG_LEVEL_SIZE+1];
+    char log_level[MAX_LOG_LEVEL_SIZE+1] = {0};
     strncpy(log_level, val, val_len);
     int lvl = log_level_from_str(log_level);
     if (lvl == -EINVAL) {
@@ -673,6 +790,7 @@ static int parse_confs(ConfFile &conf)
 
     static const ConfFile::OptionsTable option_table[] = {
         {"TcpServerPort",   false, ConfFile::parse_ul,      OPTIONS_TABLE_STRUCT_FIELD(options, tcp_port)},
+        {"Controller",      false, ConfFile::parse_str_dup, OPTIONS_TABLE_STRUCT_FIELD(options, controller)},
         {"ReportStats",     false, ConfFile::parse_bool,    OPTIONS_TABLE_STRUCT_FIELD(options, report_msg_statistics)},
         {"MavlinkDialect",  false, parse_mavlink_dialect,   OPTIONS_TABLE_STRUCT_FIELD(options, mavlink_dialect)},
         {"Log",             false, ConfFile::parse_str_dup, OPTIONS_TABLE_STRUCT_FIELD(options, logs_dir)},
@@ -714,12 +832,20 @@ static int parse_confs(ConfFile &conf)
 
     struct option_local {
         char *sockname;
-        bool binding;
+        char *remotename;
     };
     static const ConfFile::OptionsTable option_table_local[] = {
         {"SockName",     true,   ConfFile::parse_str_dup,    OPTIONS_TABLE_STRUCT_FIELD(option_local, sockname)},
-        {"binding",      true,   ConfFile::parse_bool,       OPTIONS_TABLE_STRUCT_FIELD(option_local, binding)},
+        {"RemoteName",   false,  ConfFile::parse_str_dup,    OPTIONS_TABLE_STRUCT_FIELD(option_local, remotename)},
     };
+
+    struct option_dynamic {
+        int port;
+    };
+    static const ConfFile::OptionsTable option_table_dynamic[] = {
+        {"port",        true,   ConfFile::parse_i,      OPTIONS_TABLE_STRUCT_FIELD(option_dynamic, port)},
+    };
+
     ret = conf.extract_options("General", option_table, ARRAY_SIZE(option_table), &opt);
     if (ret < 0)
         return ret;
@@ -781,17 +907,86 @@ static int parse_confs(ConfFile &conf)
     pattern = "localendpoint *";
     offset = strlen(pattern) - 1;
     while (conf.get_sections(pattern, &iter) == 0) {
-        struct option_local opt_local = {nullptr, true};
+        struct option_local opt_local = {nullptr, nullptr};
         ret = conf.extract_options(&iter, option_table_local, ARRAY_SIZE(option_table_local), &opt_local);
         if (ret == 0) {
             ret = add_local_endpoint(iter.name + offset, iter.name_len - offset, opt_local.sockname,
-                                       opt_local.binding);
+                                       opt_local.remotename);
         }
 
         free(opt_local.sockname);
+        free(opt_local.remotename);
         if (ret < 0)
             return ret;
     }
+
+    iter = {};
+    pattern = "dynamicendpoint *";
+    offset = strlen(pattern) - 1;
+    while (conf.get_sections(pattern, &iter) == 0) {
+        struct option_dynamic opt_dynamic = {0};
+        ret = conf.extract_options(&iter, option_table_dynamic, ARRAY_SIZE(option_table_dynamic), &opt_dynamic);
+        if (ret == 0) {
+            ret = add_dynamic_endpoint(iter.name + offset, iter.name_len - offset, opt_dynamic.port);
+        }
+        if (ret < 0)
+            return ret;
+    }
+
+    // All endpoints been added, then parse filters
+    struct endpoint_config *endpoint;
+    filter_type type;
+    int i = 0;
+    const char* filter_wl = "whitelist";
+    const char* filter_bl = "blacklist";
+    int array_size = get_endpoint_count();
+    char* filter_array[array_size];
+    ConfFile::OptionsTable option_table_filter[array_size];
+
+    for (endpoint = opt.endpoints; endpoint; endpoint = endpoint->next) {
+        char* p = strchr(endpoint->name, ':');
+        if (p != nullptr) {
+            p = strndup(endpoint->name, p-endpoint->name);
+        } else {
+            p = strdup(endpoint->name);
+        }
+        option_table_filter[i].key = p;
+        option_table_filter[i].required = false;
+        option_table_filter[i].parser_func = ConfFile::parse_str_dup;
+        option_table_filter[i].storage = {static_cast<off_t>(i*sizeof(char*)), sizeof(char*)};
+        i++;
+        if (i >= array_size) {
+            break;
+        }
+    }
+    pattern = "MessageFilter *";
+    offset = strlen(pattern) - 1;
+    while (conf.get_sections(pattern, &iter) == 0) {
+        if ((strlen(filter_wl) == iter.name_len-offset)
+            && !strncmp(iter.name + offset, filter_wl, iter.name_len-offset)) {
+            type = WhiteList;
+        } else if ((strlen(filter_bl) == iter.name_len-offset)
+                   && !strncmp(iter.name + offset, filter_bl, iter.name_len-offset)) {
+            type = BlackList;
+        } else {
+            continue;
+        }
+        bzero((void*)filter_array, sizeof(filter_array));
+        ret = conf.extract_options(&iter, option_table_filter, array_size, filter_array);
+        if (ret == 0) {
+            for (i = 0; i < array_size; i++) {
+                if (filter_array[i] != NULL) {
+                    add_msg_filter(option_table_filter[i].key, type, filter_array[i]);
+                    free(filter_array[i]);
+                    filter_array[i] = NULL;
+                }
+            }
+        }
+    }
+    for(i = 0; i < array_size; i++) {
+        free((void*)option_table_filter[i].key);
+    }
+    // End of parsing filters
 
     return 0;
 }
@@ -903,6 +1098,10 @@ int main(int argc, char *argv[])
 
     if (!mainloop.add_endpoints(mainloop, &opt))
         goto endpoint_error;
+
+    if(opt.controller != nullptr) {
+        Controller::open(&opt);
+    }
 
     mainloop.loop();
 

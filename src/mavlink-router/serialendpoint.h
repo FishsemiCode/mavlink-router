@@ -40,7 +40,8 @@ public:
     int add_speeds(std::vector<unsigned long> bauds);
     int flush_pending_msgs() override { return -ENOSYS; }
 protected:
-    virtual int read_msg(struct buffer* pbuf, int* target_sysid, int* target_compid, uint8_t* src_sysid, uint8_t* src_compid) override;
+    virtual int read_msg(struct buffer* pbuf, int* target_sysid, int* target_compid,
+                         uint8_t* src_sysid, uint8_t* src_compid, uint32_t* pmsg_id) override;
     ssize_t _read_msg(uint8_t* buf, size_t len);
     void _signal_data_available();
     bool _change_baudrate(void *data);

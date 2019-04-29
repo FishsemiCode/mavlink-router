@@ -139,27 +139,36 @@ int Mainloop::write_msg(Endpoint *e, const struct buffer *buf)
 }
 
 void Mainloop::route_msg(struct buffer *buf, int target_sysid, int target_compid, int sender_sysid,
-                         int sender_compid, Endpoint* src_endpoint)
+                         int sender_compid, Endpoint* src_endpoint, uint32_t msg_id)
 {
     bool unknown = true;
 
     for (Endpoint **e = g_endpoints; *e != nullptr; e++) {
-        if ((*e)->accept_msg(target_sysid, target_compid, sender_sysid, sender_compid, src_endpoint)) {
-            log_debug("Endpoint [%d] accepted message to %d/%d from %u/%u", (*e)->fd, target_sysid,
-                      target_compid, sender_sysid, sender_compid);
+        if ((*e)->accept_msg(target_sysid, target_compid, sender_sysid, sender_compid, src_endpoint, msg_id)) {
+            log_debug("Endpoint [%s] accepted message [%u] to %d/%d from [%s] %u/%u", (*e)->name(), msg_id, target_sysid,
+                      target_compid, src_endpoint->name(), sender_sysid, sender_compid);
             write_msg(*e, buf);
             unknown = false;
         }
     }
 
     for (struct endpoint_entry *e = g_tcp_endpoints; e; e = e->next) {
-        if (e->endpoint->accept_msg(target_sysid, target_compid, sender_sysid, sender_compid, src_endpoint)) {
-            log_debug("Endpoint [%d] accepted message to %d/%d from %u/%u", e->endpoint->fd,
-                      target_sysid, target_compid, sender_sysid, sender_compid);
+        if (e->endpoint->accept_msg(target_sysid, target_compid, sender_sysid, sender_compid, src_endpoint, msg_id)) {
+            log_debug("Endpoint [%s] accepted message [%u] to %d/%d from [%s] %u/%u", e->endpoint->name(), msg_id,
+                      target_sysid, target_compid, src_endpoint->name(), sender_sysid, sender_compid);
             int r = write_msg(e->endpoint, buf);
             if (r == -EPIPE) {
                 should_process_tcp_hangups = true;
             }
+            unknown = false;
+        }
+    }
+
+    for (struct udp_endpoint_entry *e = g_udp_endpoints; e; e = e->next) {
+        if (e->endpoint->accept_msg(target_sysid, target_compid, sender_sysid, sender_compid, src_endpoint, msg_id)) {
+            log_debug("Endpoint [%s] accepted message [%u] to %d/%d from [%s] %u/%u", e->endpoint->name(), msg_id,
+                      target_sysid, target_compid, src_endpoint->name(), sender_sysid, sender_compid);
+            write_msg(e->endpoint, buf);
             unknown = false;
         }
     }
@@ -254,6 +263,72 @@ accept_error:
     delete tcp;
 }
 
+bool Mainloop::add_udp_endpoint(UdpEndpoint *udp)
+{
+    struct udp_endpoint_entry *udp_entry;
+
+    udp_entry = (struct udp_endpoint_entry *)calloc(1, sizeof(struct udp_endpoint_entry));
+    if (!udp_entry)
+        return false;
+
+    udp_entry->next = g_udp_endpoints;
+    udp_entry->endpoint = udp;
+    g_udp_endpoints = udp_entry;
+
+    add_fd(udp->fd, udp, EPOLLIN);
+    log_info("Dynamic Udp endpoint added: [%s][%s:%lu]", udp->name(),
+              udp->get_ip(), udp->get_port());
+
+    return true;
+}
+
+bool Mainloop::remove_udp_endpoint(const char *ip, unsigned long port)
+{
+    for (auto *t = g_udp_endpoints; t; t = t->next) {
+        if (!strcmp(t->endpoint->get_ip(), ip) && (t->endpoint->get_port() == port)) {
+            log_info("Dynamic Udp endpoint removed: [%s][%s:%lu]", t->endpoint->name(),
+                      t->endpoint->get_ip(), t->endpoint->get_port());
+            remove_fd(t->endpoint->fd);
+            t->endpoint->close();
+            if (t->next != nullptr) {
+                auto *r = t->next;
+                delete t->endpoint;
+                t->endpoint = t->next->endpoint;
+                t->next = t->next->next;
+                free(r);
+            } else {
+                delete t->endpoint;
+                free(t);
+                g_udp_endpoints = nullptr;
+            }
+        }
+    }
+    return true;
+}
+
+bool Mainloop::find_udp_endpoint(const char *ip, unsigned long port)
+{
+    for (auto *t = g_udp_endpoints; t; t = t->next) {
+        if (!strcmp(t->endpoint->get_ip(), ip) && (t->endpoint->get_port() == port)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Mainloop::set_endpoint_filter(const char *name, filter_type type, std::vector<uint32_t> *msg_ids,
+                                   std::vector<uint16_t> *sys_comp_ids)
+{
+    for (Endpoint **e = g_endpoints; *e != nullptr; e++) {
+        if(!strcmp((*e)->name(), name)) {
+             (*e)->set_filter(type, *msg_ids, *sys_comp_ids);
+             return true;
+        }
+    }
+    return false;
+}
+
+
 void Mainloop::loop()
 {
     const int max_events = 8;
@@ -334,6 +409,10 @@ bool Mainloop::_log_aggregate_timeout(void *data)
     for (auto *t = g_tcp_endpoints; t; t = t->next) {
         t->endpoint->log_aggregate(LOG_AGGREGATE_INTERVAL_SEC);
     }
+
+    for (auto *t = g_udp_endpoints; t; t = t->next) {
+        t->endpoint->log_aggregate(LOG_AGGREGATE_INTERVAL_SEC);
+    }
     return true;
 }
 
@@ -343,6 +422,9 @@ void Mainloop::print_statistics()
         (*e)->print_statistics();
 
     for (auto *t = g_tcp_endpoints; t; t = t->next)
+        t->endpoint->print_statistics();
+
+    for (auto *t = g_udp_endpoints; t; t = t->next)
         t->endpoint->print_statistics();
 }
 
@@ -357,9 +439,10 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
 {
     unsigned n_endpoints = 0, i = 0;
     struct endpoint_config *conf;
+    struct filter_config *filter;
 
     for (conf = opt->endpoints; conf; conf = conf->next) {
-        if (conf->type != Tcp) {
+        if (conf->type != Tcp && conf->type != Dynamic) {
             // TCP endpoints are efemeral, that's why they don't
             // live on `g_endpoints` array, but on `g_tcp_endpoints` list
             n_endpoints++;
@@ -394,6 +477,7 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
 
             g_endpoints[i] = uart.release();
             mainloop.add_fd(g_endpoints[i]->fd, g_endpoints[i], EPOLLIN);
+            log_info("Uart endpoint added: [%s]", g_endpoints[i]->name());
             i++;
             break;
         }
@@ -406,6 +490,7 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
 
             g_endpoints[i] = udp.release();
             mainloop.add_fd(g_endpoints[i]->fd, g_endpoints[i], EPOLLIN);
+            log_info("Udp endpoint added: [%s]", g_endpoints[i]->name());
             i++;
             break;
         }
@@ -429,20 +514,29 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
         }
         case Local: {
             std::unique_ptr<LocalEndpoint> local{new LocalEndpoint{conf->name}};
-            if (local->open(conf->sockname, conf->binding) < 0) {
+            if (local->open(conf->sockname, conf->remotename) < 0) {
                 log_error("Could not open %s", conf->sockname);
                 return false;
             }
 
             g_endpoints[i] = local.release();
             mainloop.add_fd(g_endpoints[i]->fd, g_endpoints[i], EPOLLIN);
+            log_info("Local endpoint added: [%s]", g_endpoints[i]->name());
             i++;
             break;
+        }
+        case Dynamic: {
+            // do nothing
+            continue;
         }
         default:
             log_error("Unknow endpoint type!");
             return false;
         }
+    }
+    // add filter configs
+    for (filter = opt->filters; filter; filter = filter->next) {
+        set_endpoint_filter(filter->endpoint_name, filter->type, filter->msg_ids, filter->sys_comp_ids);
     }
 
     if (opt->tcp_port)
@@ -479,17 +573,33 @@ void Mainloop::free_endpoints(struct options *opt)
         t = next;
     }
 
+    for (auto *t = g_udp_endpoints; t;) {
+        auto next = t->next;
+        delete t->endpoint;
+        free(t);
+        t = next;
+    }
+
     for (auto e = opt->endpoints; e;) {
         auto next = e->next;
         if (e->type == Udp || e->type == Tcp) {
             free(e->address);
         } else if (e->type == Local) {
             free(e->sockname);
+            free(e->remotename);
         } else if (e->type == Uart) {
             free(e->device);
             delete e->bauds;
         }
         free(e->name);
+        free(e);
+        e = next;
+    }
+    for (auto e = opt->filters; e;) {
+        auto next = e->next;
+        free(e->endpoint_name);
+        delete e->msg_ids;
+        delete e->sys_comp_ids;
         free(e);
         e = next;
     }

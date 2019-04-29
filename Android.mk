@@ -14,6 +14,7 @@ LOCAL_SRC_FILES:= \
         src/mavlink-router/mainloop.cpp \
         src/mavlink-router/timeout.cpp \
         src/mavlink-router/serialendpoint.cpp \
+        src/mavlink-router/controller.cpp \
         src/common/conf_file.cpp \
         src/common/log.cpp \
         src/common/util.c \
