@@ -65,6 +65,7 @@ static struct options opt = {
         .conf_dir = nullptr,
         .tcp_port = ULONG_MAX,
         .controller = nullptr,
+        .passthrough_mode = false,
         .report_msg_statistics = false,
         .logs_dir = nullptr,
         .debug_log_level = (int)Log::Level::INFO,
@@ -791,6 +792,7 @@ static int parse_confs(ConfFile &conf)
     static const ConfFile::OptionsTable option_table[] = {
         {"TcpServerPort",   false, ConfFile::parse_ul,      OPTIONS_TABLE_STRUCT_FIELD(options, tcp_port)},
         {"Controller",      false, ConfFile::parse_str_dup, OPTIONS_TABLE_STRUCT_FIELD(options, controller)},
+        {"PassThroughMode", false, ConfFile::parse_bool,    OPTIONS_TABLE_STRUCT_FIELD(options, passthrough_mode)},
         {"ReportStats",     false, ConfFile::parse_bool,    OPTIONS_TABLE_STRUCT_FIELD(options, report_msg_statistics)},
         {"MavlinkDialect",  false, parse_mavlink_dialect,   OPTIONS_TABLE_STRUCT_FIELD(options, mavlink_dialect)},
         {"Log",             false, ConfFile::parse_str_dup, OPTIONS_TABLE_STRUCT_FIELD(options, logs_dir)},

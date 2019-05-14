@@ -179,6 +179,38 @@ void Mainloop::route_msg(struct buffer *buf, int target_sysid, int target_compid
     }
 }
 
+void Mainloop::passthrough_data(struct buffer *buf, Endpoint* src_endpoint)
+{
+    if (src_endpoint == nullptr || src_endpoint->group() < 0) {
+        log_debug("Ignore data from null or ungrouped endpoint");
+        return;
+    }
+
+    for (Endpoint **e = g_endpoints; *e != nullptr; e++) {
+        if ((*e)->group() >= 0 && src_endpoint->group() != (*e)->group()) {
+            log_debug("Pass data from [%s] to [%s], size [%d]", src_endpoint->name(), (*e)->name(), buf->len);
+            write_msg(*e, buf);
+        }
+    }
+
+    for (struct endpoint_entry *e = g_tcp_endpoints; e; e = e->next) {
+        if (e->endpoint->group() >= 0 && src_endpoint->group() != e->endpoint->group()) {
+            log_debug("Pass data from [%s] to [%s], size [%d]", src_endpoint->name(), e->endpoint->name(), buf->len);
+            int r = write_msg(e->endpoint, buf);
+            if (r == -EPIPE) {
+                should_process_tcp_hangups = true;
+            }
+        }
+    }
+
+    for (struct udp_endpoint_entry *e = g_udp_endpoints; e; e = e->next) {
+        if (e->endpoint->group() >= 0 && src_endpoint->group() != e->endpoint->group()) {
+            log_debug("Pass data from [%s] to [%s], size [%d]", src_endpoint->name(), e->endpoint->name(), buf->len);
+            write_msg(e->endpoint, buf);
+        }
+    }
+}
+
 void Mainloop::process_tcp_hangups()
 {
     // First, remove entries from the beginning of list, ensuring `g_tcp_endpoints` still
@@ -333,7 +365,7 @@ void Mainloop::loop()
 {
     const int max_events = 8;
     struct epoll_event events[max_events];
-    int r;
+    int r, r1;
 
     if (epollfd < 0)
         return;
@@ -361,8 +393,8 @@ void Mainloop::loop()
             Pollable *p = static_cast<Pollable *>(events[i].data.ptr);
 
             if (events[i].events & EPOLLIN) {
-                r = p->handle_read();
-                if (r < 0 && !p->is_valid()) {
+                r1 = p->handle_read();
+                if (r1 < 0 && !p->is_valid()) {
                     // Only TcpEndpoint may become invalid after a read
                     should_process_tcp_hangups = true;
                 }
@@ -555,6 +587,8 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
 
     if (opt->report_msg_statistics)
         add_timeout(MSEC_PER_SEC, _print_statistics_timeout_cb, this);
+
+    passthrough_mode = opt->passthrough_mode;
 
     return true;
 }

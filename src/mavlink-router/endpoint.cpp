@@ -81,11 +81,29 @@ int Endpoint::handle_read()
     uint8_t src_sysid, src_compid;
     uint32_t msg_id;
     struct buffer buf{};
+    uint64_t now_msec, duration;
+
+    // In pass-through mode, need not parse message
+    if (Mainloop::get_instance().passthrough_mode) {
+        now_msec = now_usec() / USEC_PER_MSEC;
+        r = _read_msg(rx_buf.data, RX_BUF_MAX_SIZE);
+        duration = now_usec() / USEC_PER_MSEC - now_msec;
+        if (duration > 3) {
+            log_warning("[%s] reading may block mainloop: [%lums]", name(), duration);
+        }
+        if (r > 0) {
+            rx_buf.len = r;
+            Mainloop::get_instance().passthrough_data(&rx_buf, this);
+        } else {
+            log_warning("[%s] reading fail: [%d]", name(), r);
+        }
+        return r;
+    }
 
     do {
-        uint64_t now_msec = now_usec() / USEC_PER_MSEC;
+        now_msec = now_usec() / USEC_PER_MSEC;
         r = read_msg(&buf, &target_sysid, &target_compid, &src_sysid, &src_compid, &msg_id);
-        uint64_t duration = now_usec() / USEC_PER_MSEC - now_msec;
+        duration = now_usec() / USEC_PER_MSEC - now_msec;
         if (duration > 3) {
             log_warning("[%s] reading may block mainloop: [%lums]", name(), duration);
         }
@@ -432,12 +450,12 @@ bool Endpoint::in_sys_comp_filter(uint8_t sysid, uint8_t compid)
     uint8_t id;
 
     for (auto it = _sys_comp_filter.begin(); it != _sys_comp_filter.end(); it++) {
-        if(compid == (*it) & 0xff) {
+        if (compid == ((*it) & 0xff)) {
             id = (*it) >> 8;
             if (id == 0 || id == sysid) {
                 return true;
             }
-        } else if (sysid == (*it) >> 8) {
+        } else if (sysid == ((*it) >> 8)) {
             id = (*it) & 0xff;
             if (id == 0 || id == compid) {
                 return true;

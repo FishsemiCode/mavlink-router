@@ -42,6 +42,7 @@ public:
     void loop();
     void route_msg(struct buffer *buf, int target_sysid, int target_compid, int sender_sysid,
                    int sender_compid, Endpoint* src_endpoint, uint32_t msg_id);
+    void passthrough_data(struct buffer *buf, Endpoint* src_endpoint);
     void handle_read(Endpoint *e);
     void handle_canwrite(Endpoint *e);
     void handle_tcp_connection();
@@ -63,6 +64,8 @@ public:
 
     int epollfd = -1;
     bool should_process_tcp_hangups = false;
+
+    bool passthrough_mode = false;
 
     /*
      * Return singleton for this class, tied to the main thread. It needds to
@@ -153,6 +156,7 @@ struct options {
     const char *conf_dir;
     unsigned long tcp_port;
     char* controller;
+    bool passthrough_mode;
     bool report_msg_statistics;
     char *logs_dir;
     int debug_log_level;
