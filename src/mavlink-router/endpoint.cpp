@@ -404,8 +404,8 @@ bool Endpoint::accept_msg(int target_sysid, int target_compid, uint8_t src_sysid
     if (target_compid > 0 && has_sys_comp_id(target_sysid, target_compid))
         return true;
 
-    // This endpoint has the target of message (sysid, but compid is broadcast): accept
-    if (has_sys_id(target_sysid) && (target_compid == 0 || target_compid == -1))
+    // This endpoint has the target sys id of message: accept
+    if (has_sys_id(target_sysid))
         return true;
 
     // Reject everything else
