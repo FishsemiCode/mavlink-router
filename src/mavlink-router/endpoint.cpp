@@ -778,29 +778,20 @@ UdpEndpoint::~UdpEndpoint()
     _ip = nullptr;
 }
 
-int UdpEndpoint::open(const char *ip, unsigned long port, bool to_bind)
+int UdpEndpoint::open(const char *ip, unsigned long port, bool to_bind, unsigned long bindport)
 {
-    if (!_ip || strcmp(ip, _ip)) {
-        free(_ip);
-        _ip = strdup(ip);
-        _port = port;
-    }
-
-    assert_or_return(_ip, -ENOMEM);
-
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) {
         log_error("Could not create socket (%m)");
         return -1;
     }
 
-    sockaddr.sin_family = AF_INET;
-    sockaddr.sin_addr.s_addr = inet_addr(ip);
-    sockaddr.sin_port = htons(port);
-
     if (to_bind) {
+        sockaddr.sin_family = AF_INET;
+        sockaddr.sin_addr.s_addr = inet_addr("0.0.0.0");
+        sockaddr.sin_port = htons(bindport);
         if (bind(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr)) < 0) {
-            log_error("Error binding socket (%m)");
+            log_error("Error binding socket to port %lu", bindport);
             goto fail;
         }
     }
@@ -810,9 +801,16 @@ int UdpEndpoint::open(const char *ip, unsigned long port, bool to_bind)
         goto fail;
     }
 
-    if (to_bind)
-        sockaddr.sin_port = 0;
-    log_info("Open UDP [%d] %s:%lu %c", fd, ip, port, to_bind ? '*' : ' ');
+    bzero(&sockaddr, sizeof(sockaddr));
+    if (ip != nullptr) {
+        _ip = strdup(ip);
+        _port = port;
+        sockaddr.sin_family = AF_INET;
+        sockaddr.sin_addr.s_addr = inet_addr(ip);
+        sockaddr.sin_port = htons(port);
+    }
+
+    log_info("Open UDP [%d] %s:%lu %c %lu", fd, ip, port, to_bind ? '*' : ' ', bindport);
 
     return fd;
 

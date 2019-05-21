@@ -125,6 +125,7 @@ struct endpoint_config {
             long unsigned port;
             int retry_timeout;
             bool eavesdropping;
+            long unsigned bindport;
         };
         struct {
             char *device;

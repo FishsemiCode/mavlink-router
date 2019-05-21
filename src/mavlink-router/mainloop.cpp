@@ -515,8 +515,8 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
         }
         case Udp: {
             std::unique_ptr<UdpEndpoint> udp{new UdpEndpoint{conf->name}};
-            if (udp->open(conf->address, conf->port, conf->eavesdropping) < 0) {
-                log_error("Could not open %s:%ld", conf->address, conf->port);
+            if (udp->open(conf->address, conf->port, conf->eavesdropping, conf->bindport) < 0) {
+                log_error("Could not open %s:%ld bind %ld", conf->address, conf->port, conf->bindport);
                 return false;
             }
 
