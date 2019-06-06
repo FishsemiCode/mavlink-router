@@ -780,6 +780,7 @@ UdpEndpoint::~UdpEndpoint()
 
 int UdpEndpoint::open(const char *ip, unsigned long port, bool to_bind, unsigned long bindport)
 {
+    const int broadcast_val = 1;
     fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) {
         log_error("Could not create socket (%m)");
@@ -797,7 +798,7 @@ int UdpEndpoint::open(const char *ip, unsigned long port, bool to_bind, unsigned
     }
 
     if (fcntl(fd, F_SETFL, O_NONBLOCK | FASYNC) < 0) {
-        log_error("Error setting socket fd as non-blocking (%m)");
+        log_error("Error setting socket fd as non-blocking (%d)", errno);
         goto fail;
     }
 
@@ -808,6 +809,10 @@ int UdpEndpoint::open(const char *ip, unsigned long port, bool to_bind, unsigned
         sockaddr.sin_family = AF_INET;
         sockaddr.sin_addr.s_addr = inet_addr(ip);
         sockaddr.sin_port = htons(port);
+        if (setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast_val, sizeof(broadcast_val))) {
+            log_error("Error enabling broadcast in socket (%d)", errno);
+            goto fail;
+        }
     }
 
     log_info("Open UDP [%d] %s:%lu %c %lu", fd, ip, port, to_bind ? '*' : ' ', bindport);
@@ -866,7 +871,7 @@ int UdpEndpoint::write_msg(const struct buffer *pbuf)
                          (struct sockaddr *)&sockaddr, sizeof(sockaddr));
     if (r == -1) {
         if (errno != EAGAIN && errno != ECONNREFUSED && errno != ENETUNREACH)
-            log_error("Error sending udp packet (%m)");
+            log_error("Error sending udp packet (%d)", errno);
         return -errno;
     };
 
