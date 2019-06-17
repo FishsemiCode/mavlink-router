@@ -109,6 +109,9 @@ public:
     bool in_msg_filter(uint32_t msg_id);
     bool in_sys_comp_filter(uint8_t sysid, uint8_t compid);
 
+    bool in_pass_through_group();
+    bool allow_pass_through(Endpoint* src);
+
     struct buffer rx_buf;
     struct buffer tx_buf;
 

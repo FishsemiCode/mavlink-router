@@ -41,6 +41,9 @@
 
 #define UART_BAUD_RETRY_SEC 5
 
+#define PASS_THROUGH_GROUP_BEGIN 100
+#define PASS_THROUGH_GROUP_END (PASS_THROUGH_GROUP_BEGIN + 99)
+
 Endpoint::Endpoint(const char *name, bool crc_check_enabled)
     : _crc_check_enabled{crc_check_enabled}
 {
@@ -84,7 +87,7 @@ int Endpoint::handle_read()
     uint64_t now_msec, duration;
 
     // In pass-through mode, need not parse message
-    if (Mainloop::get_instance().passthrough_mode) {
+    if (Mainloop::get_instance().passthrough_mode || in_pass_through_group()) {
         now_msec = now_usec() / USEC_PER_MSEC;
         r = _read_msg(rx_buf.data, RX_BUF_MAX_SIZE);
         duration = now_usec() / USEC_PER_MSEC - now_msec;
@@ -374,6 +377,11 @@ bool Endpoint::accept_msg(int target_sysid, int target_compid, uint8_t src_sysid
         return false;
     }
 
+    // message will not route to pass-through endpoint
+    if (in_pass_through_group()) {
+        return false;
+    }
+
     // message will not route to endpoint in same group
     if((_group >= 0) && (src_endpoint != nullptr) && (src_endpoint->group() == _group)) {
         return false;
@@ -461,6 +469,20 @@ bool Endpoint::in_sys_comp_filter(uint8_t sysid, uint8_t compid)
                 return true;
             }
         }
+    }
+    return false;
+}
+
+bool Endpoint::in_pass_through_group()
+{
+    return (_group >= PASS_THROUGH_GROUP_BEGIN) && (_group <= PASS_THROUGH_GROUP_END);
+}
+
+bool Endpoint::allow_pass_through(Endpoint* src)
+{
+    if (((Mainloop::get_instance().passthrough_mode && group() >= 0) || in_pass_through_group())
+        && group() != src->group()) {
+        return true;
     }
     return false;
 }

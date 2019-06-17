@@ -187,14 +187,14 @@ void Mainloop::passthrough_data(struct buffer *buf, Endpoint* src_endpoint)
     }
 
     for (Endpoint **e = g_endpoints; *e != nullptr; e++) {
-        if ((*e)->group() >= 0 && src_endpoint->group() != (*e)->group()) {
+        if ((*e)->allow_pass_through(src_endpoint)) {
             log_debug("Pass data from [%s] to [%s], size [%d]", src_endpoint->name(), (*e)->name(), buf->len);
             write_msg(*e, buf);
         }
     }
 
     for (struct endpoint_entry *e = g_tcp_endpoints; e; e = e->next) {
-        if (e->endpoint->group() >= 0 && src_endpoint->group() != e->endpoint->group()) {
+        if (e->endpoint->allow_pass_through(src_endpoint)) {
             log_debug("Pass data from [%s] to [%s], size [%d]", src_endpoint->name(), e->endpoint->name(), buf->len);
             int r = write_msg(e->endpoint, buf);
             if (r == -EPIPE) {
@@ -204,7 +204,7 @@ void Mainloop::passthrough_data(struct buffer *buf, Endpoint* src_endpoint)
     }
 
     for (struct udp_endpoint_entry *e = g_udp_endpoints; e; e = e->next) {
-        if (e->endpoint->group() >= 0 && src_endpoint->group() != e->endpoint->group()) {
+        if (e->endpoint->allow_pass_through(src_endpoint)) {
             log_debug("Pass data from [%s] to [%s], size [%d]", src_endpoint->name(), e->endpoint->name(), buf->len);
             write_msg(e->endpoint, buf);
         }
