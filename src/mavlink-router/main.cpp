@@ -253,7 +253,7 @@ static int add_endpoint_address(const char *name, size_t name_len, const char *i
         }
     }
 
-    if (!conf->address) {
+    if (!conf->address && !eavesdropping) {
         ret = -EINVAL;
         goto fail;
     }
