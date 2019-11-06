@@ -338,6 +338,26 @@ bool Mainloop::remove_udp_endpoint(const char *ip, unsigned long port)
     return true;
 }
 
+Endpoint* Mainloop::find_endpoint_by_name(const char *name)
+{
+    for (Endpoint **e = g_endpoints; *e != nullptr; e++) {
+        if (!strcmp((*e)->name(), name)) {
+            return *e;
+        }
+    }
+    for (auto *t = g_tcp_endpoints; t; t = t->next) {
+        if (!strcmp(t->endpoint->name(), name)) {
+            return t->endpoint;
+        }
+    }
+    for (auto *t = g_udp_endpoints; t; t = t->next) {
+        if (!strcmp(t->endpoint->name(), name)) {
+            return t->endpoint;
+        }
+    }
+    return nullptr;
+}
+
 bool Mainloop::find_udp_endpoint(const char *ip, unsigned long port)
 {
     for (auto *t = g_udp_endpoints; t; t = t->next) {
@@ -507,6 +527,8 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
                     return false;
             }
 
+            uart->map_endpoint_name = conf->map_endpoint;
+
             g_endpoints[i] = uart.release();
             mainloop.add_fd(g_endpoints[i]->fd, g_endpoints[i], EPOLLIN);
             log_info("Uart endpoint added: [%s]", g_endpoints[i]->name());
@@ -520,6 +542,8 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
                 return false;
             }
 
+            udp->map_endpoint_name = conf->map_endpoint;
+
             g_endpoints[i] = udp.release();
             mainloop.add_fd(g_endpoints[i]->fd, g_endpoints[i], EPOLLIN);
             log_info("Udp endpoint added: [%s]", g_endpoints[i]->name());
@@ -529,6 +553,9 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
         case Tcp: {
             std::unique_ptr<TcpEndpoint> tcp{new TcpEndpoint{conf->name}};
             tcp->retry_timeout = conf->retry_timeout;
+
+            tcp->map_endpoint_name = conf->map_endpoint;
+
             if (tcp->open(conf->address, conf->port) < 0) {
                 log_error("Could not open %s:%ld.", conf->address, conf->port);
                 if (tcp->retry_timeout > 0) {
@@ -541,6 +568,8 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
                 log_error("Could not open %s:%ld", conf->address, conf->port);
                 return false;
             }
+
+
             tcp.release();
             break;
         }
@@ -550,6 +579,8 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
                 log_error("Could not open %s", conf->sockname);
                 return false;
             }
+
+            local->map_endpoint_name = conf->map_endpoint;
 
             g_endpoints[i] = local.release();
             mainloop.add_fd(g_endpoints[i]->fd, g_endpoints[i], EPOLLIN);
@@ -590,6 +621,17 @@ bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)
 
     passthrough_mode = opt->passthrough_mode;
 
+    for (Endpoint **e = g_endpoints; *e != nullptr; e++) {
+        if ((*e)->map_endpoint_name != nullptr) {
+            (*e)->map_endpoint = find_endpoint_by_name((*e)->map_endpoint_name);
+        }
+    }
+    for (struct endpoint_entry *e = g_tcp_endpoints; e; e = e->next) {
+        if (e->endpoint->map_endpoint_name != nullptr) {
+            e->endpoint->map_endpoint = find_endpoint_by_name(e->endpoint->map_endpoint_name);
+        }
+    }
+
     return true;
 }
 
@@ -616,7 +658,9 @@ void Mainloop::free_endpoints(struct options *opt)
 
     for (auto e = opt->endpoints; e;) {
         auto next = e->next;
-        if (e->type == Udp || e->type == Tcp) {
+        if (e->type == Udp) {
+            free(e->address);
+        } else if (e->type == Tcp) {
             free(e->address);
         } else if (e->type == Local) {
             free(e->sockname);
@@ -626,6 +670,7 @@ void Mainloop::free_endpoints(struct options *opt)
             delete e->bauds;
         }
         free(e->name);
+        free(e->map_endpoint);
         free(e);
         e = next;
     }

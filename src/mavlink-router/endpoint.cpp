@@ -86,6 +86,22 @@ int Endpoint::handle_read()
     struct buffer buf{};
     uint64_t now_msec, duration;
 
+    // Map endpoint exists, just pass data to it
+    if (map_endpoint != nullptr) {
+        now_msec = now_usec() / USEC_PER_MSEC;
+        r = _read_msg(rx_buf.data, RX_BUF_MAX_SIZE);
+        duration = now_usec() / USEC_PER_MSEC - now_msec;
+        if (duration > 3) {
+            log_warning("[%s] reading may block mainloop: [%lums]", name(), duration);
+        }
+        if (r > 0) {
+            rx_buf.len = r;
+            log_debug("mapping data from [%s] to [%s], size [%d]", name(), (map_endpoint)->name(), r);
+            Mainloop::get_instance().write_msg(map_endpoint, &rx_buf);
+        }
+        return r;
+    }
+
     // In pass-through mode, need not parse message
     if (Mainloop::get_instance().passthrough_mode || in_pass_through_group()) {
         now_msec = now_usec() / USEC_PER_MSEC;
@@ -377,6 +393,11 @@ bool Endpoint::accept_msg(int target_sysid, int target_compid, uint8_t src_sysid
         return false;
     }
 
+    // map endpoint exists, ignore other messages
+    if (map_endpoint != nullptr && map_endpoint != src_endpoint) {
+        return false;
+    }
+
     // message will not route to pass-through endpoint
     if (in_pass_through_group()) {
         return false;
@@ -481,6 +502,7 @@ bool Endpoint::in_pass_through_group()
 bool Endpoint::allow_pass_through(Endpoint* src)
 {
     if (((Mainloop::get_instance().passthrough_mode && group() >= 0) || in_pass_through_group())
+        && (map_endpoint == nullptr || map_endpoint == src)
         && group() != src->group()) {
         return true;
     }

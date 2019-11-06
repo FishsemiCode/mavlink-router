@@ -56,6 +56,7 @@ public:
 
     bool add_udp_endpoint(UdpEndpoint *udp);
     bool remove_udp_endpoint(const char *ip, unsigned long port);
+    Endpoint* find_endpoint_by_name(const char *name);
     bool find_udp_endpoint(const char *ip, unsigned long port);
 
     bool set_endpoint_filter(const char *name, filter_type type, std::vector<uint32_t> *msg_ids, std::vector<uint16_t> *sys_comp_ids);
@@ -118,6 +119,7 @@ enum mavlink_dialect { Auto, Common, Ardupilotmega };
 struct endpoint_config {
     struct endpoint_config *next;
     char *name;
+    char *map_endpoint;
     enum endpoint_type type;
     union {
         struct {

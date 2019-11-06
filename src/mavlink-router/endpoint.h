@@ -115,6 +115,9 @@ public:
     struct buffer rx_buf;
     struct buffer tx_buf;
 
+    char *map_endpoint_name = nullptr;
+    Endpoint *map_endpoint = nullptr;
+
 protected:
     virtual int read_msg(struct buffer *pbuf, int *target_system, int *target_compid,
                          uint8_t *src_sysid, uint8_t *src_compid, uint32_t *pmsg_id);

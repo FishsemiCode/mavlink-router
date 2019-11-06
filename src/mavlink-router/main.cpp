@@ -169,7 +169,7 @@ static int log_level_from_str(const char *str)
 }
 
 static int add_tcp_endpoint_address(const char *name, size_t name_len, const char *ip,
-                                    long unsigned port, int timeout)
+                                    long unsigned port, int timeout, const char *map_endpoint)
 {
     int ret;
 
@@ -191,6 +191,15 @@ static int add_tcp_endpoint_address(const char *name, size_t name_len, const cha
         free(conf->address);
         conf->address = strdup(ip);
         if (!conf->address) {
+            ret = -ENOMEM;
+            goto fail;
+        }
+    }
+
+    if (map_endpoint) {
+        free(conf->map_endpoint);
+        conf->map_endpoint = strdup(map_endpoint);
+        if (!conf->map_endpoint) {
             ret = -ENOMEM;
             goto fail;
         }
@@ -220,13 +229,14 @@ static int add_tcp_endpoint_address(const char *name, size_t name_len, const cha
 fail:
     free(conf->address);
     free(conf->name);
+    free(conf->map_endpoint);
     free(conf);
 
     return ret;
 }
 
 static int add_endpoint_address(const char *name, size_t name_len, const char *ip,
-                                long unsigned port, bool eavesdropping, long unsigned bindport)
+                                long unsigned port, bool eavesdropping, long unsigned bindport, const char* map_endpoint)
 {
     int ret;
 
@@ -253,6 +263,15 @@ static int add_endpoint_address(const char *name, size_t name_len, const char *i
         }
     }
 
+    if (map_endpoint) {
+        free(conf->map_endpoint);
+        conf->map_endpoint = strdup(map_endpoint);
+        if (!conf->map_endpoint) {
+            ret = -ENOMEM;
+            goto fail;
+        }
+    }
+
     if (!conf->address && !eavesdropping) {
         ret = -EINVAL;
         goto fail;
@@ -273,13 +292,14 @@ static int add_endpoint_address(const char *name, size_t name_len, const char *i
 fail:
     free(conf->address);
     free(conf->name);
+    free(conf->map_endpoint);
     free(conf);
 
     return ret;
 }
 
 static int add_local_endpoint(const char *name, size_t name_len, const char *sockname,
-                              const char *remotename)
+                              const char *remotename, const char *map_endpoint)
 {
     int ret;
 
@@ -310,6 +330,15 @@ static int add_local_endpoint(const char *name, size_t name_len, const char *soc
         }
     }
 
+    if (map_endpoint) {
+        free(conf->map_endpoint);
+        conf->map_endpoint = strdup(map_endpoint);
+        if (!conf->map_endpoint) {
+            ret = -ENOMEM;
+            goto fail;
+        }
+    }
+
     conf->next = opt.endpoints;
     opt.endpoints = conf;
 
@@ -318,6 +347,7 @@ static int add_local_endpoint(const char *name, size_t name_len, const char *soc
 fail:
     free(conf->sockname);
     free(conf->remotename);
+    free(conf->map_endpoint);
     free(conf->name);
     free(conf);
 
@@ -399,7 +429,7 @@ error:
 }
 
 static int add_uart_endpoint(const char *name, size_t name_len, const char *uart_device,
-                             const char *bauds, bool flowcontrol)
+                             const char *bauds, bool flowcontrol, const char *map_endpoint)
 {
     int ret;
 
@@ -428,6 +458,14 @@ static int add_uart_endpoint(const char *name, size_t name_len, const char *uart
         goto fail;
     }
 
+    if (map_endpoint) {
+        conf->map_endpoint = strdup(map_endpoint);
+        if (!conf->map_endpoint) {
+            ret = -ENOMEM;
+            goto fail;
+        }
+    }
+
     conf->flowcontrol = flowcontrol;
 
     conf->next = opt.endpoints;
@@ -438,6 +476,7 @@ static int add_uart_endpoint(const char *name, size_t name_len, const char *uart
 fail:
     free(conf->device);
     free(conf->name);
+    free(conf->map_endpoint);
     free(conf);
 
     return ret;
@@ -572,7 +611,7 @@ static int parse_argv(int argc, char *argv[])
                 return -EINVAL;
             }
 
-            add_endpoint_address(NULL, 0, ip, port, false, 0);
+            add_endpoint_address(NULL, 0, ip, port, false, 0, NULL);
             free(ip);
             break;
         }
@@ -622,7 +661,7 @@ static int parse_argv(int argc, char *argv[])
                 return -EINVAL;
             }
 
-            add_tcp_endpoint_address(NULL, 0, ip, port, DEFAULT_RETRY_TCP_TIMEOUT);
+            add_tcp_endpoint_address(NULL, 0, ip, port, DEFAULT_RETRY_TCP_TIMEOUT, nullptr);
             free(ip);
             break;
         }
@@ -658,10 +697,10 @@ static int parse_argv(int argc, char *argv[])
                 return -EINVAL;
             }
 
-            add_endpoint_address(NULL, 0, base, number, true, number);
+            add_endpoint_address(NULL, 0, base, number, true, number, NULL);
         } else {
             const char *bauds = number != ULONG_MAX ? base + strlen(base) + 1 : NULL;
-            int ret = add_uart_endpoint(NULL, 0, base, bauds, false);
+            int ret = add_uart_endpoint(NULL, 0, base, bauds, false, NULL);
             if (ret < 0) {
                 free(base);
                 return ret;
@@ -800,11 +839,13 @@ static int parse_confs(ConfFile &conf)
         char *device;
         char *bauds;
         bool flowcontrol;
+        char *mapEndpoint;
     };
     static const ConfFile::OptionsTable option_table_uart[] = {
         {"baud",        false,  ConfFile::parse_str_dup,    OPTIONS_TABLE_STRUCT_FIELD(option_uart, bauds)},
         {"device",      true,   ConfFile::parse_str_dup,    OPTIONS_TABLE_STRUCT_FIELD(option_uart, device)},
         {"FlowControl", false,  ConfFile::parse_bool,       OPTIONS_TABLE_STRUCT_FIELD(option_uart, flowcontrol)},
+        {"mapEndpoint", false,  ConfFile::parse_str_dup,    OPTIONS_TABLE_STRUCT_FIELD(option_uart, mapEndpoint)},
     };
 
     struct option_udp {
@@ -812,32 +853,38 @@ static int parse_confs(ConfFile &conf)
         bool eavesdropping;
         unsigned long port;
         unsigned long bindport;
+        char *mapEndpoint;
     };
     static const ConfFile::OptionsTable option_table_udp[] = {
         {"address", false,  ConfFile::parse_str_dup,    OPTIONS_TABLE_STRUCT_FIELD(option_udp, addr)},
         {"mode",    true,   parse_mode,                 OPTIONS_TABLE_STRUCT_FIELD(option_udp, eavesdropping)},
         {"port",    false,  ConfFile::parse_ul,         OPTIONS_TABLE_STRUCT_FIELD(option_udp, port)},
         {"bindPort", false, ConfFile::parse_ul,         OPTIONS_TABLE_STRUCT_FIELD(option_udp, bindport)},
+        {"mapEndpoint", false, ConfFile::parse_str_dup, OPTIONS_TABLE_STRUCT_FIELD(option_udp, mapEndpoint)},
     };
 
     struct option_tcp {
         char *addr;
         unsigned long port;
         int timeout;
+        char *mapEndpoint;
     };
     static const ConfFile::OptionsTable option_table_tcp[] = {
         {"address",         true,   ConfFile::parse_str_dup,    OPTIONS_TABLE_STRUCT_FIELD(option_tcp, addr)},
         {"port",            true,   ConfFile::parse_ul,         OPTIONS_TABLE_STRUCT_FIELD(option_tcp, port)},
         {"RetryTimeout",    false,  ConfFile::parse_i,          OPTIONS_TABLE_STRUCT_FIELD(option_tcp, timeout)},
+        {"mapEndpoint",     false,  ConfFile::parse_str_dup,    OPTIONS_TABLE_STRUCT_FIELD(option_tcp, mapEndpoint)},
     };
 
     struct option_local {
         char *sockname;
         char *remotename;
+        char *mapEndpoint;
     };
     static const ConfFile::OptionsTable option_table_local[] = {
         {"SockName",     true,   ConfFile::parse_str_dup,    OPTIONS_TABLE_STRUCT_FIELD(option_local, sockname)},
         {"RemoteName",   false,  ConfFile::parse_str_dup,    OPTIONS_TABLE_STRUCT_FIELD(option_local, remotename)},
+        {"mapEndpoint",  false,  ConfFile::parse_str_dup,    OPTIONS_TABLE_STRUCT_FIELD(option_local, mapEndpoint)},
     };
 
     struct option_dynamic {
@@ -855,14 +902,15 @@ static int parse_confs(ConfFile &conf)
     pattern = "uartendpoint *";
     offset = strlen(pattern) - 1;
     while (conf.get_sections(pattern, &iter) == 0) {
-        struct option_uart opt_uart = {nullptr, nullptr};
+        struct option_uart opt_uart = {nullptr, nullptr, false, nullptr};
         ret = conf.extract_options(&iter, option_table_uart, ARRAY_SIZE(option_table_uart),
                                    &opt_uart);
         if (ret == 0)
             ret = add_uart_endpoint(iter.name + offset, iter.name_len - offset, opt_uart.device,
-                                    opt_uart.bauds, opt_uart.flowcontrol);
+                                    opt_uart.bauds, opt_uart.flowcontrol, opt_uart.mapEndpoint);
         free(opt_uart.device);
         free(opt_uart.bauds);
+        free(opt_uart.mapEndpoint);
         if (ret < 0)
             return ret;
     }
@@ -871,7 +919,7 @@ static int parse_confs(ConfFile &conf)
     pattern = "udpendpoint *";
     offset = strlen(pattern) - 1;
     while (conf.get_sections(pattern, &iter) == 0) {
-        struct option_udp opt_udp = {nullptr, false, ULONG_MAX, ULONG_MAX};
+        struct option_udp opt_udp = {nullptr, false, ULONG_MAX, ULONG_MAX, nullptr};
         ret = conf.extract_options(&iter, option_table_udp, ARRAY_SIZE(option_table_udp), &opt_udp);
         if (ret == 0) {
             if (opt_udp.eavesdropping && opt_udp.bindport == ULONG_MAX) {
@@ -879,11 +927,12 @@ static int parse_confs(ConfFile &conf)
                 ret = -EINVAL;
             } else {
                 ret = add_endpoint_address(iter.name + offset, iter.name_len - offset, opt_udp.addr,
-                                           opt_udp.port, opt_udp.eavesdropping, opt_udp.bindport);
+                                           opt_udp.port, opt_udp.eavesdropping, opt_udp.bindport, opt_udp.mapEndpoint);
             }
         }
 
         free(opt_udp.addr);
+        free(opt_udp.mapEndpoint);
         if (ret < 0)
             return ret;
     }
@@ -892,14 +941,15 @@ static int parse_confs(ConfFile &conf)
     pattern = "tcpendpoint *";
     offset = strlen(pattern) - 1;
     while (conf.get_sections(pattern, &iter) == 0) {
-        struct option_tcp opt_tcp = {nullptr, ULONG_MAX, DEFAULT_RETRY_TCP_TIMEOUT};
+        struct option_tcp opt_tcp = {nullptr, ULONG_MAX, DEFAULT_RETRY_TCP_TIMEOUT, nullptr};
         ret = conf.extract_options(&iter, option_table_tcp, ARRAY_SIZE(option_table_tcp), &opt_tcp);
 
         if (ret == 0) {
             ret = add_tcp_endpoint_address(iter.name + offset, iter.name_len - offset, opt_tcp.addr,
-                                           opt_tcp.port, opt_tcp.timeout);
+                                           opt_tcp.port, opt_tcp.timeout, opt_tcp.mapEndpoint);
         }
         free(opt_tcp.addr);
+        free(opt_tcp.mapEndpoint);
         if (ret < 0)
             return ret;
     }
@@ -908,15 +958,16 @@ static int parse_confs(ConfFile &conf)
     pattern = "localendpoint *";
     offset = strlen(pattern) - 1;
     while (conf.get_sections(pattern, &iter) == 0) {
-        struct option_local opt_local = {nullptr, nullptr};
+        struct option_local opt_local = {nullptr, nullptr, nullptr};
         ret = conf.extract_options(&iter, option_table_local, ARRAY_SIZE(option_table_local), &opt_local);
         if (ret == 0) {
             ret = add_local_endpoint(iter.name + offset, iter.name_len - offset, opt_local.sockname,
-                                       opt_local.remotename);
+                                       opt_local.remotename, opt_local.mapEndpoint);
         }
 
         free(opt_local.sockname);
         free(opt_local.remotename);
+        free(opt_local.mapEndpoint);
         if (ret < 0)
             return ret;
     }
