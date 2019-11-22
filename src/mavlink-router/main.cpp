@@ -262,10 +262,6 @@ static int add_endpoint_address(const char *name, size_t name_len, const char *i
         conf->port = port;
     }
 
-    if (conf->port == ULONG_MAX) {
-        conf->port = find_next_endpoint_port(conf->address);
-    }
-
     conf->eavesdropping = eavesdropping;
     conf->bindport = bindport;
 
